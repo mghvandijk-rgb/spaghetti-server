@@ -26,7 +26,25 @@ setInterval(() => {
             console.log(`Cleaned up old lobby: ${pin}`);
         }
     }
-}, 300000); // Every 5 minutes
+}, 300000);
+
+// Helper to parse query string manually
+function getQueryParam(reqUrl, param) {
+    const parts = reqUrl.split('?');
+    if (parts.length < 2) return null;
+    const query = parts[1];
+    const pairs = query.split('&');
+    for (const pair of pairs) {
+        const [key, value] = pair.split('=');
+        if (key === param) return decodeURIComponent(value || '');
+    }
+    return null;
+}
+
+// Helper to get path without query string
+function getPath(reqUrl) {
+    return reqUrl.split('?')[0];
+}
 
 // Create HTTP server
 const server = http.createServer((req, res) => {
@@ -34,28 +52,53 @@ const server = http.createServer((req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    
+
     if (req.method === 'OPTIONS') {
         res.writeHead(200);
         res.end();
         return;
     }
-    
-    // Parse URL
-    const url = new URL(req.url, `http://localhost:10000`);
-    const path = url.pathname;
-    
-    // Handle different endpoints
+
+    const path = getPath(req.url);
+
+    console.log(`${req.method} ${path}`);
+
+    // Root path - server status
+    if (path === '/' || path === '') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ 
+            status: 'ok', 
+            message: 'Spaghetti of Gehakt server is running!',
+            lobbies: lobbies.size
+        }));
+        return;
+    }
+
+    // Handle GET requests
+    if (req.method === 'GET') {
+        if (path === '/get_lobby') {
+            const pin = getQueryParam(req.url, 'pin');
+            console.log(`Getting lobby for PIN: ${pin}`);
+            handleGetLobby(res, pin);
+        } else {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Not found' }));
+        }
+        return;
+    }
+
+    // Handle POST requests
     if (req.method === 'POST') {
         let body = '';
         req.on('data', chunk => {
             body += chunk.toString();
         });
-        
+
         req.on('end', () => {
             try {
                 const data = JSON.parse(body);
-                
+                console.log(`POST ${path}:`, data);
+
                 if (path === '/create_lobby') {
                     handleCreateLobby(res, data);
                 } else if (path === '/join_lobby') {
@@ -65,36 +108,35 @@ const server = http.createServer((req, res) => {
                 } else if (path === '/leave_lobby') {
                     handleLeaveLobby(res, data);
                 } else {
-                    res.writeHead(404);
+                    res.writeHead(404, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ error: 'Not found' }));
                 }
             } catch (err) {
                 console.error('Error parsing request:', err);
-                res.writeHead(400);
+                res.writeHead(400, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: 'Bad request' }));
             }
         });
-    } else if (req.method === 'GET' && path === '/get_lobby') {
-        const pin = url.searchParams.get('pin');
-        handleGetLobby(res, pin);
-    } else {
-        res.writeHead(404);
-        res.end('Not found');
+        return;
     }
+
+    // Fallback
+    res.writeHead(405, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Method not allowed' }));
 });
 
 // Create new lobby
 function handleCreateLobby(res, data) {
     const pin = generatePIN();
     const playerID = generatePlayerID();
-    
+
     const player = {
         id: playerID,
         name: data.name,
         is_host: true,
         last_ping: Date.now()
     };
-    
+
     const lobby = {
         pin: pin,
         players: [player],
@@ -103,9 +145,9 @@ function handleCreateLobby(res, data) {
         created_at: Date.now(),
         countdown_started: false
     };
-    
+
     lobbies.set(pin, lobby);
-    
+
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
         type: 'lobby_created',
@@ -122,14 +164,14 @@ function handleCreateLobby(res, data) {
             is_host: p.is_host
         }))
     }));
-    
+
     console.log(`Lobby created: ${pin} by ${data.name}`);
 }
 
 // Join existing lobby
 function handleJoinLobby(res, data) {
     const lobby = lobbies.get(data.pin);
-    
+
     if (!lobby) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
@@ -139,7 +181,7 @@ function handleJoinLobby(res, data) {
         }));
         return;
     }
-    
+
     if (lobby.players.length >= lobby.max_players) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
@@ -149,7 +191,7 @@ function handleJoinLobby(res, data) {
         }));
         return;
     }
-    
+
     const playerID = generatePlayerID();
     const player = {
         id: playerID,
@@ -157,9 +199,9 @@ function handleJoinLobby(res, data) {
         is_host: false,
         last_ping: Date.now()
     };
-    
+
     lobby.players.push(player);
-    
+
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
         type: 'join_success',
@@ -176,14 +218,20 @@ function handleJoinLobby(res, data) {
             is_host: p.is_host
         }))
     }));
-    
+
     console.log(`${data.name} joined lobby ${data.pin}`);
 }
 
 // Get lobby state (polling endpoint)
 function handleGetLobby(res, pin) {
+    if (!pin) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'PIN required' }));
+        return;
+    }
+
     const lobby = lobbies.get(pin);
-    
+
     if (!lobby) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
@@ -192,7 +240,7 @@ function handleGetLobby(res, pin) {
         }));
         return;
     }
-    
+
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
         type: 'lobby_state',
@@ -211,60 +259,56 @@ function handleGetLobby(res, pin) {
 // Start game
 function handleStartGame(res, data) {
     const lobby = lobbies.get(data.pin);
-    
+
     if (!lobby) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: false }));
         return;
     }
-    
+
     lobby.state = 'started';
     lobby.countdown_started = true;
-    
+
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
         type: 'game_started',
         success: true
     }));
-    
+
     console.log(`Game starting in lobby ${data.pin}`);
 }
 
 // Leave lobby
 function handleLeaveLobby(res, data) {
     const lobby = lobbies.get(data.pin);
-    
+
     if (!lobby) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: false }));
         return;
     }
-    
+
     const playerIndex = lobby.players.findIndex(p => p.id === data.player_id);
     if (playerIndex === -1) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: false }));
         return;
     }
-    
+
     const wasHost = lobby.players[playerIndex].is_host;
     lobby.players.splice(playerIndex, 1);
-    
-    // If lobby empty, delete it
+
     if (lobby.players.length === 0) {
         lobbies.delete(data.pin);
         console.log(`Lobby ${data.pin} deleted (empty)`);
     } else if (wasHost) {
-        // Assign new host
         lobby.players[0].is_host = true;
     }
-    
+
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ success: true }));
 }
 
 server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
-    console.log(`Test with: http://localhost:${PORT}`);
 });
-
