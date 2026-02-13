@@ -42,7 +42,7 @@ const server = http.createServer((req, res) => {
     }
     
     // Parse URL
-    const url = new URL(req.url, `http://localhost:${PORT}`);
+    const url = new URL(req.url, `http://localhost:10000`);
     const path = url.pathname;
     
     // Handle different endpoints
@@ -267,3 +267,4 @@ server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     console.log(`Test with: http://localhost:${PORT}`);
 });
+
